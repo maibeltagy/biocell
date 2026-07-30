@@ -1,0 +1,57 @@
+# Environment & Secrets (DO NOT COMMIT)
+.env
+*.env
+backend/.env
+backend/*.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Large Datasets & Model Weights
+data/
+data/*
+*.zarr
+*.zip
+*.tif
+*.tiff
+
+# Jobs storage & Uploads
+backend/jobs/*
+!backend/jobs/.gitkeep
+
+# Generated Outputs & Temporary Exports
+*.mp4
+*.png
+submission.csv
+
+# Python Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.python-version
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter Notebook Checkpoints
+.ipynb_checkpoints/
+
+# IDE & Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS System Files
+.DS_Store
+Thumbs.db

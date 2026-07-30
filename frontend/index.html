@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CellTrack — 3D Cell Detection &amp; Tracking</title>
+  <meta name="description" content="Interactive 3D + time microscopy cell tracking: detect cells, build lineage trees, analyze division events, and export results." />
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="shortcut icon" href="favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <div class="app-container">
+
+    <!-- ===================================================================
+         Sidebar Navigation (Left)
+         =================================================================== -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="app-logo">🔬</div>
+        <div class="app-title-group">
+          <h1 class="app-title">CellTrack</h1>
+          <span class="app-subtitle">3D + Time Microscopy</span>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav" aria-label="Main Navigation">
+        <button type="button" class="nav-item active" data-target="upload-section">
+          <span class="nav-icon">📁</span>
+          <span class="nav-label">Upload</span>
+        </button>
+        <button type="button" class="nav-item disabled" data-target="viewer-section" id="nav-viewer">
+          <span class="nav-icon">🖼</span>
+          <span class="nav-label">Viewer</span>
+        </button>
+        <button type="button" class="nav-item disabled" data-target="stats-section" id="nav-stats">
+          <span class="nav-icon">📊</span>
+          <span class="nav-label">Stats</span>
+        </button>
+        <button type="button" class="nav-item disabled" data-target="lineage-section" id="nav-lineage">
+          <span class="nav-icon">🌿</span>
+          <span class="nav-label">Lineage</span>
+        </button>
+        <button type="button" class="nav-item disabled" data-target="export-section" id="nav-export">
+          <span class="nav-icon">💾</span>
+          <span class="nav-label">Export</span>
+        </button>
+        <button type="button" class="nav-item disabled" data-target="chat-section" id="nav-chat">
+          <span class="nav-icon">🤖</span>
+          <span class="nav-label">AI Chat</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="dataset-status-pill">
+          <span class="status-indicator-dot" id="status-indicator-dot"></span>
+          <span class="status-dataset-text" id="sidebar-dataset-name">No active dataset</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ===================================================================
+         Main Workspace (Right)
+         =================================================================== -->
+    <main class="main-workspace">
+
+      <!-- Top Header Bar -->
+      <header class="top-bar">
+        <div class="top-bar-title">
+          <span class="top-bar-icon" id="top-bar-icon">📁</span>
+          <h2 id="top-bar-heading">Upload Volume</h2>
+        </div>
+        <div class="top-bar-status">
+          <button type="button" id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle Dark/Light Theme" aria-label="Toggle Dark/Light Theme">
+            <span id="theme-toggle-icon">🌙</span>
+          </button>
+          <span class="header-status-indicator" id="header-status-text">Ready</span>
+        </div>
+      </header>
+
+      <!-- Workspace Content Area -->
+      <div class="workspace-content">
+
+        <!-- ================================================================
+             1. Upload Section
+             ================================================================ -->
+        <section id="upload-section" class="tab-panel active">
+          <div class="panel-header">
+            <div class="panel-icon">📁</div>
+            <h2>Upload Volume</h2>
+          </div>
+
+          <p class="landing-description">
+            Detects individual cells in a 3D + time microscopy volume, links them into
+            tracks across frames, and flags division events &mdash; with an interactive slice viewer,
+            lineage tree, stats dashboard, and CSV / video export once processing finishes.
+          </p>
+
+          <!-- Drag & Drop Zone -->
+          <div class="drop-zone" id="drop-zone" role="button" tabindex="0" aria-label="Click or drag a file to upload">
+            <input type="file" id="file-input" accept=".zip,.tif,.tiff" aria-label="Select volume file" />
+            <span class="drop-zone-icon">☁️</span>
+            <div class="drop-zone-text">
+              <strong class="browse-link">Click to browse</strong> or drag &amp; drop your volume here
+            </div>
+          </div>
+
+          <div class="file-selected-info" id="file-selected-info">
+            <span class="file-icon">📄</span>
+            <span id="file-name-display">No file selected</span>
+          </div>
+
+          <p class="hint">Accepted: <strong>.tif / .tiff</strong> or <strong>.zip</strong> containing a .zarr directory &mdash; max 2 GiB.</p>
+
+          <div class="action-row">
+            <button id="analyze-button" type="button" disabled aria-label="Start analysis">
+              ⚡ Analyze
+            </button>
+          </div>
+
+          <!-- Status / Progress section -->
+          <div id="status-section" class="status-panel hidden" aria-live="polite">
+            <div class="status-row">
+              <div id="status-spinner" class="spinner"></div>
+              <p id="status-text">Submitting job&hellip;</p>
+            </div>
+            <div class="progress-bar-wrap" id="progress-bar-wrap">
+              <div class="progress-bar"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             2. Slice Viewer Section
+             ================================================================ -->
+        <section id="viewer-section" class="tab-panel hidden">
+          <div class="panel-header">
+            <div class="panel-icon">🖼</div>
+            <h2>Slice Viewer</h2>
+          </div>
+
+          <div class="viewer-controls">
+            <label class="control-row">
+              <span class="control-label">Timepoint (t):&nbsp;<span id="t-value">0</span></span>
+              <input type="range" id="t-slider" min="0" max="0" value="0" step="1" aria-label="Timepoint slider" />
+            </label>
+
+            <label class="control-row checkbox-row">
+              <input type="checkbox" id="projection-toggle" checked aria-label="Max projection Z toggle" />
+              <span class="control-label">Max projection (Z)</span>
+            </label>
+
+            <label class="control-row hidden" id="z-slider-row">
+              <span class="control-label">Z slice:&nbsp;<span id="z-value">0</span></span>
+              <input type="range" id="z-slider" min="0" max="0" value="0" step="1" aria-label="Z-slice slider" />
+            </label>
+          </div>
+
+          <div class="canvas-wrapper">
+            <canvas id="slice-canvas" aria-label="Cell microscopy slice"></canvas>
+            <div id="viewer-tooltip" class="tooltip hidden" role="tooltip"></div>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             3. Stats Dashboard Section
+             ================================================================ -->
+        <section id="stats-section" class="tab-panel hidden">
+          <div class="panel-header">
+            <div class="panel-icon">📊</div>
+            <h2>Stats Dashboard</h2>
+          </div>
+
+          <div class="metric-cards">
+            <div class="metric-card" title="Total cell detections across all frames">
+              <span class="metric-value" id="metric-total-cells">&ndash;</span>
+              <span class="metric-label">Total cells detected</span>
+            </div>
+            <div class="metric-card" title="Frames where one cell links to 2+ children">
+              <span class="metric-value" id="metric-division-events">&ndash;</span>
+              <span class="metric-label">Division events</span>
+            </div>
+            <div class="metric-card" title="Mean physical displacement per linked step">
+              <span class="metric-value" id="metric-avg-speed">&ndash;</span>
+              <span class="metric-label">Avg. speed (&micro;m / frame)</span>
+            </div>
+          </div>
+
+          <p id="voxel-scale-note" class="hint"></p>
+
+          <div class="chart-block">
+            <h3>Cell count over time</h3>
+            <div class="chart-container">
+              <canvas id="cell-count-chart" aria-label="Cell count per timepoint chart"></canvas>
+            </div>
+          </div>
+
+          <div class="chart-block">
+            <h3>Division events by timepoint</h3>
+            <div class="chart-container">
+              <canvas id="division-events-chart" aria-label="Division events per timepoint chart"></canvas>
+            </div>
+            <p id="no-divisions-note" class="placeholder-note hidden">No division events detected in this volume.</p>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             4. Lineage Tree Section
+             ================================================================ -->
+        <section id="lineage-section" class="tab-panel hidden">
+          <div class="panel-header">
+            <div class="panel-icon">🌿</div>
+            <h2>Lineage Tree</h2>
+          </div>
+
+          <div class="lineage-controls">
+            <label for="track-select" class="control-label">Select Track:</label>
+            <select id="track-select" aria-label="Select track to display"></select>
+            <span id="track-count-note" class="hint"></span>
+
+            <div class="lineage-zoom-buttons">
+              <button type="button" id="btn-zoom-in" class="zoom-btn" title="Zoom In">🔍 +</button>
+              <button type="button" id="btn-zoom-out" class="zoom-btn" title="Zoom Out">🔍 &minus;</button>
+              <button type="button" id="btn-zoom-reset" class="zoom-btn" title="Reset Zoom">🔄 Reset</button>
+            </div>
+          </div>
+
+          <div class="lineage-svg-wrapper">
+            <svg id="lineage-svg" aria-label="Lineage tree diagram"></svg>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             5. Export Section
+             ================================================================ -->
+        <section id="export-section" class="tab-panel hidden">
+          <div class="panel-header">
+            <div class="panel-icon">💾</div>
+            <h2>Export Results</h2>
+          </div>
+
+          <div class="export-grid">
+            <!-- CSV -->
+            <div class="export-item">
+              <span class="export-item-icon">📋</span>
+              <div class="export-item-body">
+                <div class="export-item-title">Tracking CSV</div>
+                <div class="export-item-desc">Submission-schema CSV: all detections &amp; track edges.</div>
+              </div>
+              <button id="download-csv-button" type="button" aria-label="Download CSV tracking data">Download</button>
+            </div>
+
+            <!-- Video -->
+            <div class="export-item">
+              <span class="export-item-icon">🎬</span>
+              <div class="export-item-body">
+                <div class="export-item-title">Annotated Video</div>
+                <div class="export-item-desc">MP4 with overlaid cell detections (rendered server-side).</div>
+                <span id="video-export-status" class="hint" aria-live="polite"></span>
+                <a id="video-download-link" class="hidden" href="#" download aria-label="Download annotated video">⬇ Download .mp4</a>
+              </div>
+              <button id="export-video-button" type="button" aria-label="Start video export">Export</button>
+            </div>
+
+            <!-- Report -->
+            <div class="export-item">
+              <span class="export-item-icon">🤖</span>
+              <div class="export-item-body">
+                <div class="export-item-title">AI Summary Report</div>
+                <div class="export-item-desc">Auto-generated plain-language report via LLM.</div>
+                <span id="report-status" class="hint" aria-live="polite"></span>
+              </div>
+              <button id="generate-report-button" type="button" aria-label="Generate AI report">Generate</button>
+            </div>
+          </div>
+
+          <div id="report-panel" class="report-panel hidden" aria-label="Generated report">
+            <p id="report-text"></p>
+            <div class="report-panel-actions">
+              <button id="copy-report-button" type="button" class="secondary-button">📋 Copy</button>
+              <button id="download-report-button" type="button" class="secondary-button">⬇ Download .txt</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             6. AI Chat Section
+             ================================================================ -->
+        <section id="chat-section" class="tab-panel hidden">
+          <div class="panel-header">
+            <div class="panel-icon">🤖</div>
+            <h2>Ask about these results</h2>
+          </div>
+          <p class="hint" style="margin-bottom: 1rem;">
+            Answers are grounded in this job&rsquo;s actual tracking data &mdash;
+            the assistant calls read-only tools against your real result.
+          </p>
+
+          <div id="chat-messages" class="chat-messages" aria-live="polite" aria-label="Chat messages"></div>
+
+          <form id="chat-form" class="chat-input-row" autocomplete="off">
+            <input
+              type="text"
+              id="chat-input"
+              placeholder="e.g. How many cells at t=5? Which track is fastest?"
+              autocomplete="off"
+              aria-label="Chat message input"
+            />
+            <button type="submit" id="chat-send-button" aria-label="Send chat message">Send ↗</button>
+          </form>
+        </section>
+
+      </div> <!-- /workspace-content -->
+    </main> <!-- /main-workspace -->
+
+  </div> <!-- /app-container -->
+
+  <!-- Scripts -->
+  <script src="vendor/chart.umd.min.js"></script>
+  <script>
+    if (typeof Chart === 'undefined') {
+      document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"><\/script>');
+    }
+  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+  <script src="app.js"></script>
+  <script src="viewer.js"></script>
+  <script src="stats.js"></script>
+  <script src="lineage.js"></script>
+  <script src="export.js"></script>
+  <script src="chat.js"></script>
+</body>
+</html>

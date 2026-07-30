@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+numpy
+scipy
+scikit-image
+zarr
+tifffile
+python-multipart
+Pillow
+opencv-python-headless
+anthropic
+openai
+python-dotenv
