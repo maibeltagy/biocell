@@ -62,22 +62,18 @@ def load_volume(path: str) -> np.ndarray:
     lower = path.lower()
 
     if os.path.isdir(path) or lower.endswith(".zarr"):
-        # --- Zarr branch ---
-        import zarr  # imported lazily so the tif-only path doesn't require it
+        # --- Zarr branch (Lazy array access to prevent RAM spikes) ---
+        import zarr
 
         z = zarr.open(path, mode="r")
-        # A zarr "array" can be opened directly; a zarr "group" may store
-        # the array under a conventional key. Handle both simply.
         if hasattr(z, "shape"):
-            volume = np.asarray(z)
+            volume = z
         else:
-            # Group: try the most common conventions used for this project.
             if "volume" in z:
-                volume = np.asarray(z["volume"])
+                volume = z["volume"]
             else:
-                # Fall back to the first array found in the group.
                 first_key = next(iter(z.array_keys()))
-                volume = np.asarray(z[first_key])
+                volume = z[first_key]
 
     elif lower.endswith(".tif") or lower.endswith(".tiff"):
         # --- TIFF branch ---
@@ -91,15 +87,13 @@ def load_volume(path: str) -> np.ndarray:
             "Expected a .zarr directory or a .tif/.tiff file."
         )
 
-    volume = np.asarray(volume)
-
     if volume.ndim != 4:
         raise ValueError(
             f"Expected a 4D (T, Z, Y, X) volume, got array with shape "
             f"{volume.shape} (ndim={volume.ndim})."
         )
 
-    return volume.astype(np.uint16, copy=False)
+    return volume
 
 
 # --------------------------------------------------------------------------
@@ -288,65 +282,42 @@ def rescale_to_uint8(
 
 
 def extract_display_slice(
-    volume: np.ndarray,
+    volume: Any,
     t: int,
     z: Optional[int] = None,
 ) -> np.ndarray:
     """
     Extract a single 2D (Y, X) uint8 image from a (T, Z, Y, X) volume at
-    timepoint `t`, ready to render as PNG:
-      - if `z` is None: a max-intensity projection across the Z axis
-      - otherwise: the single Z-slice at index `z`
-    In both cases the result is percentile-rescaled to 8-bit.
-
-    Raises IndexError if t or z are out of bounds (left to the caller to
-    turn into a friendly HTTP error).
+    timepoint `t`, ready to render as PNG. Slice is loaded lazily from disk.
     """
-    frame = volume[t]  # (Z, Y, X)
+    frame = np.asarray(volume[t])
 
     if z is None:
         slice_2d = frame.max(axis=0)
     else:
         slice_2d = frame[z]
 
-    return rescale_to_uint8(slice_2d)
+    return rescale_to_uint8(np.asarray(slice_2d))
 
 
 def run_pipeline(
-    volume: np.ndarray,
+    volume: Any,
     voxel_scale: Tuple[float, float, float] = DEFAULT_VOXEL_SCALE,
 ) -> dict:
     """
-    Run detection + tracking over a (T, Z, Y, X) volume.
-
-    STUB IMPLEMENTATION: per-frame threshold/local-max blob detection,
-    followed by naive nearest-neighbor linking between consecutive frames.
-    Produces output in the exact shape the real pipeline is expected to
-    return, so the web app can be developed and tested against it now.
-
-    Args:
-        volume: (T, Z, Y, X) uint16 array.
-        voxel_scale: (z, y, x) physical size of one voxel in microns.
-
-    Returns:
-        {
-          "nodes": [{"id", "t", "z", "y", "x"}, ...],
-          "edges": [{"source", "target"}, ...],
-          "stats": {
-             "cell_count_per_frame": [...],
-             "division_events": [...],
-             "avg_speed_um_per_frame": float
-          }
-        }
+    Run detection + tracking over a (T, Z, Y, X) volume lazily frame-by-frame.
     """
     if volume.ndim != 4:
         raise ValueError(f"Expected (T, Z, Y, X) volume, got shape {volume.shape}")
 
     n_frames = volume.shape[0]
+    detections_per_frame = []
 
-    detections_per_frame = [
-        _detect_blobs_in_frame(volume[t]) for t in range(n_frames)
-    ]
+    for t in range(n_frames):
+        frame_t = np.asarray(volume[t], dtype=np.uint16)
+        detections = _detect_blobs_in_frame(frame_t)
+        detections_per_frame.append(detections)
+        del frame_t
 
     nodes, edges = _link_frames_nearest_neighbor(detections_per_frame)
     stats = _compute_stats(nodes, edges, n_frames, voxel_scale)
