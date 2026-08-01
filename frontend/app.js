@@ -212,16 +212,44 @@ if (analyzeButton) {
 // API calls
 // ---------------------------------------------------------------------------
 
-async function submitJob(file) {
-  const formData = new FormData();
-  formData.append("file", file);
+function submitJob(file) {
+  return new Promise((resolve, reject) => {
+    const formData = new FormData();
+    formData.append("file", file);
 
-  const response = await fetch("/jobs", { method: "POST", body: formData });
-  if (!response.ok) {
-    throw new Error(await extractErrorDetail(response, "Failed to submit job"));
-  }
-  const data = await response.json();
-  return data.job_id;
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/jobs");
+
+    if (xhr.upload) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percent = Math.round((event.loaded / event.total) * 100);
+          showStatus(`Uploading volume: ${percent}%`, { spinning: true, error: false, progress: true });
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          resolve(data.job_id);
+        } catch (e) {
+          reject(new Error("Invalid response from server"));
+        }
+      } else {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          reject(new Error(data.detail || `Upload failed (HTTP ${xhr.status})`));
+        } catch (e) {
+          reject(new Error(`Failed to submit job (HTTP ${xhr.status})`));
+        }
+      }
+    };
+
+    xhr.onerror = () => reject(new Error("Network error during file upload. Please check your connection."));
+    xhr.send(formData);
+  });
 }
 
 async function pollUntilFinished(jobId) {

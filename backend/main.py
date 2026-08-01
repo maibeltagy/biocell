@@ -192,33 +192,51 @@ def _friendly_error_message(exc: Exception) -> str:
     )
 
 
-def _process_job(job_id: str, input_path: Path) -> None:
+def _resolve_input_path(dest_path: Path) -> Path:
     """
-    Runs in the background after a job is submitted. Loads the volume,
-    runs the (currently stub) pipeline, and writes result.json /
-    status.json. Any exception is caught and recorded as an "error" status
-    rather than crashing the background task silently.
+    If dest_path is a .zip, extract it alongside dest_path and return the
+    path to the extracted .zarr directory (or extract dir).
+    """
+    lower = dest_path.name.lower()
+    if lower.endswith(".zip"):
+        input_dir = dest_path.parent
+        extract_dir = input_dir / "extracted"
+        extract_dir.mkdir(exist_ok=True)
+        with zipfile.ZipFile(dest_path) as zf:
+            zf.extractall(extract_dir)
+
+        zarr_candidates = list(extract_dir.glob("*.zarr")) + list(
+            extract_dir.glob("*/*.zarr")
+        )
+        if zarr_candidates:
+            return zarr_candidates[0]
+        return extract_dir
+
+    return dest_path
+
+
+def _process_job(job_id: str, dest_path: Path) -> None:
+    """
+    Runs in the background after a job is submitted. Extracts zip if needed,
+    loads volume, runs pipeline, and writes result.json / status.json.
     """
     try:
         _write_status(job_id, "running")
 
+        input_path = _resolve_input_path(dest_path)
+        _write_input_path(job_id, input_path)
+
         volume = pipeline.load_volume(str(input_path))
         result = pipeline.run_pipeline(volume, voxel_scale=pipeline.DEFAULT_VOXEL_SCALE)
 
-        # Stashed alongside nodes/edges/stats purely for the frontend's
-        # benefit -- not part of pipeline.run_pipeline's own contract:
-        #   - volume_shape: sizes the Z slider in the slice viewer
-        #   - voxel_scale_um: lets the UI show the physical voxel spacing
-        #     actually used for the µm-based stats (avg speed), rather
-        #     than leaving that conversion factor implicit/undiscoverable
         result["volume_shape"] = list(volume.shape)  # [T, Z, Y, X]
         result["voxel_scale_um"] = list(pipeline.DEFAULT_VOXEL_SCALE)  # [z, y, x]
 
         _result_path(job_id).write_text(json.dumps(result))
         _write_status(job_id, "done")
 
-    except Exception as exc:  # noqa: BLE001 -- we want to catch everything here
-        traceback.print_exc()  # full detail stays in the server log
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
         _write_status(job_id, "error", error=_friendly_error_message(exc))
 
 
@@ -310,51 +328,6 @@ def _copy_upload_with_size_limit(upload: UploadFile, dest_path: Path, max_bytes:
         raise
 
 
-def _save_upload_and_resolve_input_path(job_id: str, upload: UploadFile) -> Path:
-    """
-    Save the uploaded file into jobs/{job_id}/input/ and return the path
-    that pipeline.load_volume() should be pointed at.
-
-    Handles three cases:
-      - a .tif / .tiff file            -> saved as-is
-      - a .zip containing a .zarr dir  -> saved and then unzipped
-      - a .zarr directory itself can't be uploaded as a single "file" over
-        HTTP, so zarr volumes must arrive zipped (this is the common
-        pattern for zip uploads of directory-based formats).
-    """
-    input_dir = _job_dir(job_id) / "input"
-    input_dir.mkdir(parents=True, exist_ok=True)
-
-    filename = upload.filename or "upload"
-    dest_path = input_dir / filename
-
-    _copy_upload_with_size_limit(upload, dest_path, MAX_UPLOAD_SIZE_BYTES)
-
-    lower = filename.lower()
-
-    if lower.endswith(".zip"):
-        # Assume a zipped .zarr directory. Unzip alongside the upload and
-        # point at the extracted directory.
-        extract_dir = input_dir / "extracted"
-        extract_dir.mkdir(exist_ok=True)
-        with zipfile.ZipFile(dest_path) as zf:
-            zf.extractall(extract_dir)
-
-        # The zip may contain the .zarr directory at its root, or nested one
-        # level down (e.g. "myvolume.zarr/..."). Look for a .zarr dir first;
-        # fall back to the extract_dir itself.
-        zarr_candidates = list(extract_dir.glob("*.zarr")) + list(
-            extract_dir.glob("*/*.zarr")
-        )
-        if zarr_candidates:
-            return zarr_candidates[0]
-        return extract_dir
-
-    # .tif / .tiff (or anything else) -- hand the saved file straight to
-    # load_volume, which will branch on extension itself.
-    return dest_path
-
-
 # --------------------------------------------------------------------------
 # Endpoints
 # --------------------------------------------------------------------------
@@ -366,9 +339,8 @@ async def create_job(
 ) -> JSONResponse:
     """
     Accept a volume upload (.tif/.tiff, or a .zip containing a .zarr dir),
-    save it, and kick off pipeline processing as a background task.
-    Returns immediately with the new job_id -- the client is expected to
-    poll GET /jobs/{job_id}/status.
+    save raw bytes to disk, and kick off background extraction & processing.
+    Returns immediately with job_id so HTTP request finishes fast.
     """
     _validate_upload_or_raise(file)
 
@@ -376,10 +348,14 @@ async def create_job(
     _job_dir(job_id).mkdir(parents=True, exist_ok=True)
     _write_status(job_id, "pending")
 
-    input_path = _save_upload_and_resolve_input_path(job_id, file)
-    _write_input_path(job_id, input_path)
+    input_dir = _job_dir(job_id) / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    filename = file.filename or "upload"
+    dest_path = input_dir / filename
 
-    background_tasks.add_task(_process_job, job_id, input_path)
+    _copy_upload_with_size_limit(file, dest_path, MAX_UPLOAD_SIZE_BYTES)
+
+    background_tasks.add_task(_process_job, job_id, dest_path)
 
     return JSONResponse({"job_id": job_id})
 
