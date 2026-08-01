@@ -212,7 +212,7 @@ if (analyzeButton) {
 // API calls
 // ---------------------------------------------------------------------------
 
-function submitJob(file) {
+function submitJobDirect(file) {
   return new Promise((resolve, reject) => {
     const formData = new FormData();
     formData.append("file", file);
@@ -250,6 +250,73 @@ function submitJob(file) {
     xhr.onerror = () => reject(new Error("Network error during file upload. Please check your connection."));
     xhr.send(formData);
   });
+}
+
+async function submitJob(file) {
+  const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB per chunk
+
+  // Small files (<= 10MB) use standard direct single upload
+  if (file.size <= 10 * 1024 * 1024) {
+    return submitJobDirect(file);
+  }
+
+  // Large files (> 10MB): Chunked upload (5MB per request to avoid HTTP 502 timeouts)
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  showStatus(`Initializing chunked upload (0/${totalChunks} parts)...`, { spinning: true, error: false, progress: true });
+
+  // 1. Initialize chunked job
+  const initRes = await fetch("/jobs/chunk/init", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      filename: file.name,
+      total_chunks: totalChunks,
+      total_size: file.size,
+    }),
+  });
+
+  if (!initRes.ok) {
+    throw new Error(await extractErrorDetail(initRes, "Failed to initialize upload"));
+  }
+
+  const { job_id } = await initRes.json();
+
+  // 2. Upload 5MB chunks sequentially
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * CHUNK_SIZE;
+    const end = Math.min(file.size, start + CHUNK_SIZE);
+    const chunk = file.slice(start, end);
+
+    const formData = new FormData();
+    formData.append("chunk_index", i);
+    formData.append("file", chunk, file.name);
+
+    const percent = Math.round(((i + 1) / totalChunks) * 100);
+    showStatus(`Uploading volume: ${percent}% (part ${i + 1}/${totalChunks})...`, { spinning: true, error: false, progress: true });
+
+    const chunkRes = await fetch(`/jobs/${job_id}/chunk`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!chunkRes.ok) {
+      throw new Error(await extractErrorDetail(chunkRes, `Failed to upload part ${i + 1}/${totalChunks}`));
+    }
+  }
+
+  // 3. Complete chunked upload and trigger background processing
+  showStatus("Upload complete! Preparing volume for analysis...", { spinning: true, error: false, progress: true });
+  const completeRes = await fetch(`/jobs/${job_id}/chunk/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: file.name }),
+  });
+
+  if (!completeRes.ok) {
+    throw new Error(await extractErrorDetail(completeRes, "Failed to complete upload"));
+  }
+
+  return job_id;
 }
 
 async function pollUntilFinished(jobId) {

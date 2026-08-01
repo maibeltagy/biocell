@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, File, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -331,6 +331,90 @@ def _copy_upload_with_size_limit(upload: UploadFile, dest_path: Path, max_bytes:
 # --------------------------------------------------------------------------
 # Endpoints
 # --------------------------------------------------------------------------
+
+class ChunkInitRequest(BaseModel):
+    filename: str
+    total_chunks: int
+    total_size: int
+
+class ChunkCompleteRequest(BaseModel):
+    filename: str
+
+
+@app.post("/jobs/chunk/init")
+async def init_chunked_job(req: ChunkInitRequest) -> JSONResponse:
+    """Initialize a chunked upload for large files (+10MB)."""
+    job_id = str(uuid.uuid4())
+    job_d = _job_dir(job_id)
+    job_d.mkdir(parents=True, exist_ok=True)
+    input_dir = job_d / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+
+    _write_status(job_id, "uploading")
+    meta = {
+        "filename": req.filename,
+        "total_chunks": req.total_chunks,
+        "total_size": req.total_size,
+        "received_chunks": 0,
+    }
+    (job_d / "chunk_meta.json").write_text(json.dumps(meta))
+    return JSONResponse({"job_id": job_id})
+
+
+@app.post("/jobs/{job_id}/chunk")
+async def upload_chunk(
+    job_id: str,
+    chunk_index: int = Form(...),
+    file: UploadFile = File(...),
+) -> JSONResponse:
+    """Accept a 5MB slice of a large upload."""
+    job_d = _job_dir(job_id)
+    if not job_d.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    meta_path = job_d / "chunk_meta.json"
+    if not meta_path.exists():
+        raise HTTPException(status_code=400, detail="Chunk upload not initialized")
+
+    meta = json.loads(meta_path.read_text())
+    filename = meta["filename"]
+    dest_path = job_d / "input" / filename
+
+    with dest_path.open("ab") as dest_file:
+        chunk_data = await file.read()
+        dest_file.write(chunk_data)
+
+    meta["received_chunks"] += 1
+    meta_path.write_text(json.dumps(meta))
+
+    return JSONResponse({
+        "status": "chunk_received",
+        "chunk_index": chunk_index,
+        "received_chunks": meta["received_chunks"],
+        "total_chunks": meta["total_chunks"],
+    })
+
+
+@app.post("/jobs/{job_id}/chunk/complete")
+async def complete_chunked_job(
+    job_id: str,
+    req: ChunkCompleteRequest,
+    background_tasks: BackgroundTasks,
+) -> JSONResponse:
+    """Signal completion of all chunks and start background processing."""
+    job_d = _job_dir(job_id)
+    if not job_d.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    dest_path = job_d / "input" / req.filename
+    if not dest_path.exists():
+        raise HTTPException(status_code=400, detail="Uploaded file missing on disk")
+
+    _write_status(job_id, "pending")
+    background_tasks.add_task(_process_job, job_id, dest_path)
+
+    return JSONResponse({"job_id": job_id, "status": "pending"})
+
 
 @app.post("/jobs")
 async def create_job(
